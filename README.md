@@ -1,11 +1,22 @@
-<div align="center">
+# FinCalc Pós - Gestão Financeira Educacional
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Simulador financeiro profissional para análise de viabilidade de cursos e projetos educacionais.
 
-  <h1>Built with AI Studio</h2>
+## Funcionalidades
+- **DRE Gerencial**: Visão completa de receitas, impostos e custos operacionais.
+- **Folha de Pagamento**: Gestão de cargos administrativos e de apoio com encargos automáticos.
+- **Indicadores Financeiros**: Cálculo automático de TIR (IRR) e Payback.
+- **Análise de Sensibilidade**: Gráficos interativos para testar variações de preço e volume.
+- **Exportação**: Relatórios completos em Excel e PDF.
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Como rodar localmente
+1. Instale as dependências: `npm install`
+2. Inicie o servidor: `npm run dev`
+3. Acesse: `http://localhost:3000`
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## Tecnologias
+- React + TypeScript
+- Vite + Tailwind CSS 4
+- Recharts (Gráficos)
+- Motion (Animações)
+- XLSX & jsPDF (Exportação)
