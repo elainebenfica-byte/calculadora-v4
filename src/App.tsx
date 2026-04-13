@@ -218,15 +218,26 @@ export default function App() {
                 <InputField label="Turmas" value={activeInputs.numberOfClasses} onChange={(v) => handleInputChange('numberOfClasses', v)} />
                 <InputField label="Mensalidade" prefix="R$" value={activeInputs.monthlyTicket} onChange={(v) => handleInputChange('monthlyTicket', v)} />
                 <InputField label="Descontos" suffix="%" value={activeInputs.discountPercent} onChange={(v) => handleInputChange('discountPercent', v)} />
+                <InputField label="Impostos" suffix="%" value={activeInputs.taxPercent} onChange={(v) => handleInputChange('taxPercent', v)} />
               </InputGroup>
-              <InputGroup title="Custos">
+
+              <InputGroup title="Custos Diretos">
                 <CostInputField label="Docente CLT" param={activeInputs.teacherCLT} onChange={(v) => handleInputChange('teacherCLT', v)} isTeacher />
                 <CostInputField label="Docente PJ" param={activeInputs.teacherPJ} onChange={(v) => handleInputChange('teacherPJ', v)} isTeacher />
-                <CostInputField label="Ocupação" param={activeInputs.rentOccupation} onChange={(v) => handleInputChange('rentOccupation', v)} />
+                <InputField label="Horas/Mês" value={activeInputs.teacherHoursPerMonth} onChange={(v) => handleInputChange('teacherHoursPerMonth', v)} />
               </InputGroup>
+
+              <InputGroup title="Demais Despesas">
+                <CostInputField label="Serv. Terceiros" param={activeInputs.thirdPartyServices} onChange={(v) => handleInputChange('thirdPartyServices', v)} />
+                <CostInputField label="Aluguel/Ocupação" param={activeInputs.rentOccupation} onChange={(v) => handleInputChange('rentOccupation', v)} />
+                <CostInputField label="Manutenção" param={activeInputs.maintenance} onChange={(v) => handleInputChange('maintenance', v)} />
+                <CostInputField label="Viagens/Hosped." param={activeInputs.travel} onChange={(v) => handleInputChange('travel', v)} />
+                <CostInputField label="Outros Operac." param={activeInputs.otherOperational} onChange={(v) => handleInputChange('otherOperational', v)} />
+              </InputGroup>
+
               <InputGroup title="Viabilidade">
                 <InputField label="Investimento" prefix="R$" value={activeInputs.initialInvestment} onChange={(v) => handleInputChange('initialInvestment', v)} />
-                <InputField label="Horizonte" value={activeInputs.projectionMonths} onChange={(v) => handleInputChange('projectionMonths', v)} />
+                <InputField label="Horizonte" suffix="meses" value={activeInputs.projectionMonths} onChange={(v) => handleInputChange('projectionMonths', v)} />
               </InputGroup>
             </div>
           </motion.aside>
@@ -258,8 +269,11 @@ export default function App() {
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
               <TabButton id="summary" label="Resumo" icon={Activity} active={activeTab === 'summary'} onClick={setActiveTab} />
               <TabButton id="dre" label="DRE" icon={TableIcon} active={activeTab === 'dre'} onClick={setActiveTab} />
+              <TabButton id="drivers" label="Indicadores" icon={Target} active={activeTab === 'drivers'} onClick={setActiveTab} />
               <TabButton id="payroll" label="Folha" icon={Users} active={activeTab === 'payroll'} onClick={setActiveTab} />
+              <TabButton id="cashflow" label="Fluxo de Caixa" icon={TrendingUp} active={activeTab === 'cashflow'} onClick={setActiveTab} />
               <TabButton id="sensitivity" label="Sensibilidade" icon={Settings2} active={activeTab === 'sensitivity'} onClick={setActiveTab} />
+              <TabButton id="levers" label="Alavancas" icon={Zap} active={activeTab === 'levers'} onClick={setActiveTab} />
             </div>
 
             <AnimatePresence mode="wait">
@@ -275,16 +289,36 @@ export default function App() {
               {activeTab === 'dre' && (
                 <motion.div key="dre" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-white rounded-3xl border shadow-sm overflow-hidden">
                   <table className="w-full text-left">
-                    <thead className="bg-slate-50"><tr><th className="px-8 py-4">Item</th><th className="px-8 py-4 text-right">Valor</th></tr></thead>
+                    <thead className="bg-slate-50"><tr><th className="px-8 py-4">Item</th><th className="px-8 py-4 text-right">Valor</th><th className="px-8 py-4 text-right">% RL</th></tr></thead>
                     <tbody>
                       {results.dreLines.map((line, i) => (
                         <tr key={i} className={cn("border-b", line.isTotal && "bg-blue-50/30")}>
                           <td className={cn("px-8 py-4", line.isBold && "font-bold")}>{line.label}</td>
                           <td className="px-8 py-4 text-right font-mono">{line.label.includes('Mg.') ? formatPercent(line.value) : formatCurrency(line.value)}</td>
+                          <td className="px-8 py-4 text-right text-slate-400 text-xs">{line.percentOfNetRevenue ? `${line.percentOfNetRevenue.toFixed(1)}%` : '-'}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </motion.div>
+              )}
+              {activeTab === 'drivers' && (
+                <motion.div key="drivers" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-white p-6 rounded-3xl border shadow-sm">
+                    <h3 className="font-bold mb-4">Eficiência por Aluno</h3>
+                    <div className="space-y-3">
+                      <div className="flex justify-between"><span>Receita Líquida / Aluno</span><span className="font-bold">{formatCurrency(results.drivers.revenuePerStudent)}</span></div>
+                      <div className="flex justify-between"><span>Custo Total / Aluno</span><span className="font-bold text-red-500">{formatCurrency(results.drivers.costPerStudent)}</span></div>
+                      <div className="flex justify-between border-t pt-2"><span>Margem / Aluno</span><span className="font-bold text-emerald-600">{formatCurrency(results.drivers.marginPerStudent)}</span></div>
+                    </div>
+                  </div>
+                  <div className="bg-white p-6 rounded-3xl border shadow-sm">
+                    <h3 className="font-bold mb-4">Ponto de Equilíbrio</h3>
+                    <div className="flex flex-col items-center justify-center h-full py-4">
+                      <div className="text-4xl font-black text-blue-600">{Math.ceil(results.drivers.breakEvenStudents)}</div>
+                      <div className="text-sm text-slate-400 font-medium uppercase tracking-widest">Alunos para Break-even</div>
+                    </div>
+                  </div>
                 </motion.div>
               )}
               {activeTab === 'payroll' && (
@@ -308,6 +342,22 @@ export default function App() {
                   </table>
                 </motion.div>
               )}
+              {activeTab === 'cashflow' && (
+                <motion.div key="cashflow" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-white p-8 rounded-3xl border shadow-sm">
+                  <h3 className="font-bold mb-6">Fluxo de Caixa Acumulado</h3>
+                  <div className="h-[350px]">
+                    <ResponsiveContainer>
+                      <LineChart data={results.cumulativeCashFlow.map((val, i) => ({ month: i, value: val }))}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="month" label={{ value: 'Meses', position: 'insideBottom', offset: -5 }} />
+                        <YAxis tickFormatter={v => formatCurrency(v).replace('R$', '').trim()} />
+                        <Tooltip formatter={(v: any) => formatCurrency(v)} />
+                        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={4} dot={{ r: 4, fill: '#3b82f6' }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </motion.div>
+              )}
               {activeTab === 'sensitivity' && (
                 <motion.div key="sensitivity" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <div className="bg-white p-8 rounded-3xl border shadow-sm">
@@ -318,6 +368,22 @@ export default function App() {
                     <h3 className="font-bold mb-6">Resultado vs Alunos</h3>
                     <div className="h-[300px]"><ResponsiveContainer><LineChart data={sensitivityStudents}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="value" /><YAxis tickFormatter={v => formatCurrency(v).replace('R$', '').trim()} /><Tooltip /><Line type="monotone" dataKey="operatingResult" stroke="#10b981" strokeWidth={3} /></LineChart></ResponsiveContainer></div>
                   </div>
+                </motion.div>
+              )}
+              {activeTab === 'levers' && (
+                <motion.div key="levers" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+                  {results.levers.map((lever, i) => (
+                    <div key={i} className="bg-white p-6 rounded-2xl border shadow-sm flex justify-between items-center">
+                      <div>
+                        <h4 className="font-bold text-slate-900">{lever.label}</h4>
+                        <p className="text-sm text-slate-500">{lever.description}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-bold text-emerald-600">+{formatCurrency(lever.impact)}</div>
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">Impacto no Resultado</div>
+                      </div>
+                    </div>
+                  ))}
                 </motion.div>
               )}
             </AnimatePresence>
