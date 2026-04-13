@@ -136,8 +136,13 @@ export default function App() {
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   const [scenarios, setScenarios] = useState<Record<string, ScenarioInputs>>(() => {
-    const saved = localStorage.getItem('fincalc_scenarios_v4');
-    if (saved) try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    const savedV4 = localStorage.getItem('fincalc_scenarios_v4');
+    if (savedV4) try { return JSON.parse(savedV4); } catch (e) { console.error(e); }
+    
+    // Migração da v3 para v4 se existir
+    const savedV3 = localStorage.getItem('fincalc_scenarios_v3');
+    if (savedV3) try { return JSON.parse(savedV3); } catch (e) { console.error(e); }
+
     return {
       conservative: { ...DEFAULT_INPUTS, name: 'Conservador', students: 40, numberOfClasses: 2, discountPercent: 25 },
       base: { ...DEFAULT_INPUTS },
@@ -290,39 +295,8 @@ export default function App() {
     XLSX.writeFile(workbook, `FinCalc_Relatorio_${activeInputs.name}.xlsx`);
   };
 
-  const exportToPDF = async () => {
-    if (!dashboardRef.current || isExportingPDF) return;
-    
-    try {
-      setIsExportingPDF(true);
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      const element = dashboardRef.current;
-      if (!element) return;
-
-      const canvas = await html2canvas(element, { 
-        scale: 2, 
-        useCORS: true, 
-        backgroundColor: '#f8fafc',
-        logging: false,
-        removeContainer: true,
-        foreignObjectRendering: false, // Desativado para evitar erros de segurança
-      });
-      
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const imgData = canvas.toDataURL('image/png');
-      const imgProps = pdf.getImageProperties(imgData);
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-      
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`Relatorio_Executivo_${activeInputs.name}.pdf`);
-    } catch (error) {
-      console.error('Erro ao gerar PDF:', error);
-      alert('Não foi possível gerar o PDF. Tente usar o Excel ou imprimir a página (Ctrl+P).');
-    } finally {
-      setIsExportingPDF(false);
-    }
+  const exportToPDF = () => {
+    window.print();
   };
 
   const sensitivityTicket = useMemo(() => generateSensitivityData(activeInputs, 'monthlyTicket', [500, 750, 1000, 1250, 1500]), [activeInputs]);
@@ -418,13 +392,9 @@ export default function App() {
             <button onClick={exportToExcel} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold">Excel</button>
             <button 
               onClick={exportToPDF} 
-              disabled={isExportingPDF}
-              className={cn(
-                "px-4 py-2 rounded-xl text-sm font-semibold transition-all",
-                isExportingPDF ? "bg-slate-400 cursor-not-allowed" : "bg-slate-900 text-white hover:bg-slate-800"
-              )}
+              className="px-4 py-2 bg-slate-900 text-white hover:bg-slate-800 rounded-xl text-sm font-semibold transition-all"
             >
-              {isExportingPDF ? 'Gerando...' : 'PDF'}
+              PDF
             </button>
           </div>
         </header>
