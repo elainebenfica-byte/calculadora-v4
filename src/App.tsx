@@ -131,11 +131,12 @@ export default function App() {
   const [view, setView] = useState<'dashboard' | 'comparison'>('dashboard');
   const [activeTab, setActiveTab] = useState<'summary' | 'dre' | 'drivers' | 'cashflow' | 'sensitivity' | 'costs' | 'levers' | 'payroll'>('summary');
   const [presentationMode, setPresentationMode] = useState(false);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [activeScenarioId, setActiveScenarioId] = useState('base');
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   const [scenarios, setScenarios] = useState<Record<string, ScenarioInputs>>(() => {
-    const saved = localStorage.getItem('fincalc_scenarios_v3');
+    const saved = localStorage.getItem('fincalc_scenarios_v4');
     if (saved) try { return JSON.parse(saved); } catch (e) { console.error(e); }
     return {
       conservative: { ...DEFAULT_INPUTS, name: 'Conservador', students: 40, numberOfClasses: 2, discountPercent: 25 },
@@ -144,14 +145,50 @@ export default function App() {
     };
   });
 
-  const activeInputs = scenarios[activeScenarioId];
-  const results = useMemo(() => calculateFinancials(activeInputs), [activeInputs]);
-  const allResults = useMemo(() => SCENARIOS_CONFIG.reduce((acc, config) => { acc[config.id] = calculateFinancials(scenarios[config.id]); return acc; }, {} as Record<string, any>), [scenarios]);
+  const [customScenarioIds, setCustomScenarioIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem('fincalc_custom_ids_v4');
+    return saved ? JSON.parse(saved) : [];
+  });
 
-  useEffect(() => { localStorage.setItem('fincalc_scenarios_v3', JSON.stringify(scenarios)); }, [scenarios]);
+  const activeInputs = scenarios[activeScenarioId] || scenarios['base'];
+  const results = useMemo(() => calculateFinancials(activeInputs), [activeInputs]);
+  
+  const allScenarioConfigs = useMemo(() => [
+    ...SCENARIOS_CONFIG,
+    ...customScenarioIds.map(id => ({ id, name: scenarios[id]?.name || 'Estudo', color: 'bg-slate-500', icon: Activity }))
+  ], [customScenarioIds, scenarios]);
+
+  const allResults = useMemo(() => allScenarioConfigs.reduce((acc, config) => { 
+    acc[config.id] = calculateFinancials(scenarios[config.id] || scenarios['base']); 
+    return acc; 
+  }, {} as Record<string, any>), [scenarios, allScenarioConfigs]);
+
+  useEffect(() => { 
+    localStorage.setItem('fincalc_scenarios_v4', JSON.stringify(scenarios));
+    localStorage.setItem('fincalc_custom_ids_v4', JSON.stringify(customScenarioIds));
+  }, [scenarios, customScenarioIds]);
 
   const handleInputChange = (field: keyof ScenarioInputs, value: any) => {
     setScenarios(prev => ({ ...prev, [activeScenarioId]: { ...prev[activeScenarioId], [field]: value < 0 ? 0 : value } }));
+  };
+
+  const saveStudy = () => {
+    const id = 'study_' + Math.random().toString(36).substr(2, 9);
+    const newName = `${activeInputs.name} (Cópia)`;
+    setScenarios(prev => ({ ...prev, [id]: { ...activeInputs, name: newName } }));
+    setCustomScenarioIds(prev => [...prev, id]);
+    setActiveScenarioId(id);
+  };
+
+  const deleteScenario = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (id === activeScenarioId) setActiveScenarioId('base');
+    setCustomScenarioIds(prev => prev.filter(i => i !== id));
+    setScenarios(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const addPayrollItem = () => {
@@ -169,22 +206,123 @@ export default function App() {
 
   const exportToExcel = () => {
     const workbook = XLSX.utils.book_new();
-    const comparisonData = SCENARIOS_CONFIG.map(config => {
-      const res = calculateFinancials(scenarios[config.id]);
-      const inputs = scenarios[config.id];
-      return { 'Cenário': config.name, 'Alunos': inputs.students, 'Mensalidade': inputs.monthlyTicket, 'Receita Líquida': res.netRevenue, 'Result. Operacional': res.operatingResult, 'TIR (%)': res.irr || 0, 'Payback (meses)': res.payback || 0 };
+    
+    // 1. DRE DETALHADA
+    const dreRows = [
+      ['RELATÓRIO FINANCEIRO EXECUTIVO'],
+      ['Estudo:', activeInputs.name],
+      ['Data de Exportação:', new Date().toLocaleDateString('pt-BR')],
+      [''],
+      ['ESTRUTURA DA DRE', 'VALOR (R$)', '% SOBRE RL'],
+    ];
+
+    results.dreLines.forEach(line => {
+      dreRows.push([
+        line.label,
+        line.value,
+        line.percentOfNetRevenue ? (line.percentOfNetRevenue / 100) : 0
+      ]);
     });
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(comparisonData), "Comparativo");
-    XLSX.writeFile(workbook, `Simulacao_Financeira_${activeInputs.name}.xlsx`);
+
+    dreRows.push(['']);
+    dreRows.push(['INDICADORES DE VIABILIDADE', 'VALOR', 'STATUS']);
+    dreRows.push(['TIR (Taxa Interna de Retorno)', (results.irr || 0) / 100, results.classification.status]);
+    dreRows.push(['Payback Estimado (Meses)', results.payback || 0, '']);
+    dreRows.push(['Margem Operacional Final', results.operatingMargin / 100, '']);
+
+    const dreSheet = XLSX.utils.aoa_to_sheet(dreRows);
+
+    // Aplicando formatos numéricos (Moeda e Porcentagem)
+    const range = XLSX.utils.decode_range(dreSheet['!ref'] || 'A1:C50');
+    for (let R = range.s.r; R <= range.e.r; ++R) {
+      // Coluna B (Valores)
+      const cellB = dreSheet[XLSX.utils.encode_cell({ r: R, c: 1 })];
+      if (cellB && typeof cellB.v === 'number' && R > 3) {
+        cellB.z = '"R$ "#,##0.00';
+      }
+      // Coluna C (Percentuais)
+      const cellC = dreSheet[XLSX.utils.encode_cell({ r: R, c: 2 })];
+      if (cellC && typeof cellC.v === 'number' && R > 3) {
+        cellC.z = '0.0%';
+      }
+    }
+
+    dreSheet['!cols'] = [{ wch: 35 }, { wch: 20 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(workbook, dreSheet, "DRE Detalhada");
+
+    // 2. COMPARATIVO DE CENÁRIOS
+    const compRows = [
+      ['COMPARATIVO DE CENÁRIOS E ESTUDOS'],
+      [''],
+      ['Cenário', 'Alunos', 'Mensalidade', 'Rec. Líquida', 'Res. Operacional', 'TIR (%)', 'Payback']
+    ];
+
+    allScenarioConfigs.forEach(config => {
+      const res = allResults[config.id];
+      const inputs = scenarios[config.id];
+      compRows.push([
+        inputs.name,
+        inputs.students,
+        inputs.monthlyTicket,
+        res.netRevenue,
+        res.operatingResult,
+        (res.irr || 0) / 100,
+        res.payback || 0
+      ]);
+    });
+
+    const compSheet = XLSX.utils.aoa_to_sheet(compRows);
+    
+    // Formatos no Comparativo
+    const compRange = XLSX.utils.decode_range(compSheet['!ref'] || 'A1:G20');
+    for (let R = 2; R <= compRange.e.r; ++R) {
+      [3, 4].forEach(C => {
+        const cell = compSheet[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (cell) cell.z = '"R$ "#,##0.00';
+      });
+      const cellTIR = compSheet[XLSX.utils.encode_cell({ r: R, c: 5 })];
+      if (cellTIR) cellTIR.z = '0.0%';
+    }
+
+    compSheet['!cols'] = [{ wch: 25 }, { wch: 10 }, { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(workbook, compSheet, "Comparativo");
+
+    XLSX.writeFile(workbook, `FinCalc_Relatorio_${activeInputs.name}.xlsx`);
   };
 
   const exportToPDF = async () => {
-    if (!dashboardRef.current) return;
-    const canvas = await html2canvas(dashboardRef.current, { scale: 2, useCORS: true, backgroundColor: '#f8fafc' });
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pdfWidth, (canvas.height * pdfWidth) / canvas.width);
-    pdf.save(`Relatorio_Executivo_${activeInputs.name}.pdf`);
+    if (!dashboardRef.current || isExportingPDF) return;
+    
+    try {
+      setIsExportingPDF(true);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const element = dashboardRef.current;
+      if (!element) return;
+
+      const canvas = await html2canvas(element, { 
+        scale: 2, 
+        useCORS: true, 
+        backgroundColor: '#f8fafc',
+        logging: false,
+        removeContainer: true,
+        foreignObjectRendering: false, // Desativado para evitar erros de segurança
+      });
+      
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const imgData = canvas.toDataURL('image/png');
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`Relatorio_Executivo_${activeInputs.name}.pdf`);
+    } catch (error) {
+      console.error('Erro ao gerar PDF:', error);
+      alert('Não foi possível gerar o PDF. Tente usar o Excel ou imprimir a página (Ctrl+P).');
+    } finally {
+      setIsExportingPDF(false);
+    }
   };
 
   const sensitivityTicket = useMemo(() => generateSensitivityData(activeInputs, 'monthlyTicket', [500, 750, 1000, 1250, 1500]), [activeInputs]);
@@ -198,21 +336,46 @@ export default function App() {
             <div className="p-6 border-b border-slate-100">
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-200"><TrendingUp className="text-white w-6 h-6" /></div>
-                <div><h1 className="font-bold text-slate-900 leading-tight">FinCalc Pós</h1><p className="text-xs text-slate-400 font-medium">Executive Suite v2.0</p></div>
+                <div><h1 className="font-bold text-slate-900 leading-tight">FinCalc Pós</h1><p className="text-[10px] text-blue-600 font-bold">Versão 4.1 - Estável</p></div>
               </div>
               <div className="flex p-1 bg-slate-100 rounded-xl mb-4">
                 <button onClick={() => setView('dashboard')} className={cn("flex-1 flex items-center justify-center gap-2 py-2 rounded-lg transition-all text-xs font-bold", view === 'dashboard' ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}><LayoutDashboard className="w-3.5 h-3.5" />DASHBOARD</button>
                 <button onClick={() => setView('comparison')} className={cn("flex-1 flex items-center justify-center gap-2 py-2 rounded-lg transition-all text-xs font-bold", view === 'comparison' ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}><TableIcon className="w-3.5 h-3.5" />COMPARAÇÃO</button>
               </div>
-              <div className="flex p-1 bg-slate-100 rounded-xl">
+              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl mb-4">
                 {SCENARIOS_CONFIG.map((config) => (
-                  <button key={config.id} onClick={() => setActiveScenarioId(config.id)} className={cn("flex-1 flex flex-col items-center py-2 rounded-lg transition-all", activeScenarioId === config.id ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}>
+                  <button key={config.id} onClick={() => setActiveScenarioId(config.id)} className={cn("flex flex-col items-center py-2 rounded-lg transition-all", activeScenarioId === config.id ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}>
                     <config.icon className="w-4 h-4 mb-1" /><span className="text-[10px] font-bold uppercase tracking-tighter">{config.name}</span>
                   </button>
                 ))}
               </div>
+
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estudos Salvos</h3>
+                  <button onClick={saveStudy} className="text-[10px] font-bold text-blue-600 hover:text-blue-700">+ NOVO</button>
+                </div>
+                <div className="space-y-1 max-h-40 overflow-y-auto scrollbar-none">
+                  {customScenarioIds.length === 0 && <p className="text-[10px] text-slate-400 italic px-1">Nenhum estudo salvo.</p>}
+                  {customScenarioIds.map(id => (
+                    <div key={id} onClick={() => setActiveScenarioId(id)} className={cn("group flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all", activeScenarioId === id ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50 text-slate-600")}>
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        <Activity className="w-3 h-3 flex-shrink-0" />
+                        <span className="text-xs font-medium truncate">{scenarios[id]?.name}</span>
+                      </div>
+                      <button onClick={(e) => deleteScenario(id, e)} className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 transition-opacity">
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-6 scrollbar-thin">
+              <InputGroup title="Identificação">
+                <InputField label="Nome do Estudo" type="text" value={activeInputs.name} onChange={(v) => handleInputChange('name', v)} />
+              </InputGroup>
+              
               <InputGroup title="Receita">
                 <InputField label="Alunos" value={activeInputs.students} onChange={(v) => handleInputChange('students', v)} />
                 <InputField label="Turmas" value={activeInputs.numberOfClasses} onChange={(v) => handleInputChange('numberOfClasses', v)} />
@@ -244,7 +407,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <main className="flex-1 overflow-y-auto p-8 scrollbar-thin" ref={dashboardRef}>
+      <main id="dashboard-content" className="flex-1 overflow-y-auto p-8 scrollbar-thin" ref={dashboardRef}>
         <header className="flex justify-between items-end mb-8">
           <div>
             <h2 className="text-3xl font-bold text-slate-900 tracking-tight">{view === 'dashboard' ? 'Dashboard Executivo' : 'Comparativo'}</h2>
@@ -253,17 +416,26 @@ export default function App() {
           <div className="flex gap-3">
             <button onClick={() => setPresentationMode(!presentationMode)} className="px-4 py-2 bg-white border rounded-xl text-sm font-semibold">{presentationMode ? 'Sair' : 'Apresentação'}</button>
             <button onClick={exportToExcel} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold">Excel</button>
-            <button onClick={exportToPDF} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold">PDF</button>
+            <button 
+              onClick={exportToPDF} 
+              disabled={isExportingPDF}
+              className={cn(
+                "px-4 py-2 rounded-xl text-sm font-semibold transition-all",
+                isExportingPDF ? "bg-slate-400 cursor-not-allowed" : "bg-slate-900 text-white hover:bg-slate-800"
+              )}
+            >
+              {isExportingPDF ? 'Gerando...' : 'PDF'}
+            </button>
           </div>
         </header>
 
         {view === 'dashboard' ? (
           <div className="space-y-8">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              <StatCard title="Result. Operacional" value={formatCurrency(results.operatingResult)} subValue={`Margem: ${formatPercent(results.operatingMargin)}`} icon={TrendingUp} color="bg-emerald-500" />
-              <StatCard title="TIR (IRR)" value={results.irr ? `${results.irr.toFixed(2)}%` : 'N/A'} subValue="Rentabilidade" icon={PieChart} color="bg-blue-500" />
-              <StatCard title="Payback" value={results.payback ? `${results.payback.toFixed(1)} meses` : 'N/A'} subValue="Retorno" icon={ArrowRight} color="bg-amber-500" />
-              <StatCard title="Receita Líquida" value={formatCurrency(results.netRevenue)} subValue="Total" icon={DollarSign} color="bg-indigo-500" />
+              <StatCard title="Result. Operacional" value={formatCurrency(results.operatingResult)} subValue={`Margem: ${formatPercent(results.operatingMargin)}`} icon={TrendingUp} color="bg-emerald-500" tooltip="Lucro líquido da operação antes de impostos financeiros e investimentos." />
+              <StatCard title="TIR (IRR)" value={results.irr ? `${results.irr.toFixed(2)}%` : 'N/A'} subValue="Rentabilidade" icon={PieChart} color="bg-blue-500" tooltip="Taxa Interna de Retorno: a rentabilidade anualizada do projeto." />
+              <StatCard title="Payback" value={results.payback ? `${results.payback.toFixed(1)} meses` : 'N/A'} subValue="Retorno" icon={ArrowRight} color="bg-amber-500" tooltip="Tempo necessário para recuperar o investimento inicial." />
+              <StatCard title="Receita Líquida" value={formatCurrency(results.netRevenue)} subValue="Total" icon={DollarSign} color="bg-indigo-500" tooltip="Faturamento total após descontos e impostos sobre vendas." />
             </div>
 
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
@@ -390,14 +562,23 @@ export default function App() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {SCENARIOS_CONFIG.map(config => (
-              <div key={config.id} className={cn("bg-white p-8 rounded-3xl border-2", activeScenarioId === config.id ? "border-blue-500" : "border-slate-100")}>
-                <h3 className="text-xl font-bold mb-6">{config.name}</h3>
-                <div className="space-y-4 mb-8">
-                  <div className="flex justify-between"><span>Receita</span><span className="font-bold">{formatCurrency(allResults[config.id].netRevenue)}</span></div>
-                  <div className="flex justify-between"><span>TIR</span><span className="font-bold text-blue-600">{allResults[config.id].irr?.toFixed(1)}%</span></div>
+            {allScenarioConfigs.map(config => (
+              <div key={config.id} className={cn("bg-white p-8 rounded-3xl border-2 transition-all", activeScenarioId === config.id ? "border-blue-500 shadow-lg shadow-blue-100" : "border-slate-100 hover:border-slate-200")}>
+                <div className="flex justify-between items-start mb-6">
+                  <h3 className="text-xl font-bold">{scenarios[config.id]?.name}</h3>
+                  {customScenarioIds.includes(config.id) && (
+                    <button onClick={(e) => deleteScenario(config.id, e)} className="text-slate-300 hover:text-red-500 transition-colors">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
-                <button onClick={() => { setActiveScenarioId(config.id); setView('dashboard'); }} className="w-full py-3 bg-slate-50 rounded-xl font-bold">DETALHES</button>
+                <div className="space-y-4 mb-8">
+                  <div className="flex justify-between text-sm text-slate-500"><span>Receita Líquida</span><span className="font-bold text-slate-900">{formatCurrency(allResults[config.id].netRevenue)}</span></div>
+                  <div className="flex justify-between text-sm text-slate-500"><span>Result. Operacional</span><span className="font-bold text-slate-900">{formatCurrency(allResults[config.id].operatingResult)}</span></div>
+                  <div className="flex justify-between text-sm text-slate-500"><span>TIR</span><span className="font-bold text-blue-600">{allResults[config.id].irr?.toFixed(1)}%</span></div>
+                  <div className="flex justify-between text-sm text-slate-500"><span>Payback</span><span className="font-bold text-amber-600">{allResults[config.id].payback?.toFixed(1)}m</span></div>
+                </div>
+                <button onClick={() => { setActiveScenarioId(config.id); setView('dashboard'); }} className="w-full py-3 bg-slate-50 hover:bg-blue-50 hover:text-blue-600 rounded-xl font-bold transition-colors">DETALHES</button>
               </div>
             ))}
           </div>
