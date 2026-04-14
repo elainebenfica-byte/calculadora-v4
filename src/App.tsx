@@ -1,12 +1,10 @@
 import { useState, useMemo, useRef, useEffect, type ReactNode, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import { 
   TrendingUp, Users, DollarSign, PieChart, Settings2, ArrowRight,
   Target, Zap, ShieldAlert, Trash2, LayoutDashboard, Table as TableIcon,
-  Activity, HelpCircle
+  Activity, HelpCircle, LogIn, LogOut, Cloud, RefreshCw
 } from 'lucide-react';
 import { 
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, 
@@ -16,6 +14,30 @@ import {
 import { ScenarioInputs, CostParameter, PayrollItem } from './types';
 import { calculateFinancials, generateSensitivityData } from './lib/finance';
 import { cn, formatCurrency, formatPercent, parseCurrency, formatCurrencyInput } from './lib/utils';
+
+// Firebase
+import { auth, db } from './firebase';
+import firebaseConfig from '../firebase-applet-config.json';
+import { initializeApp, deleteApp } from 'firebase/app';
+import { 
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged, 
+  signOut,
+  getAuth,
+  User
+} from 'firebase/auth';
+import { 
+  doc, 
+  onSnapshot, 
+  setDoc, 
+  serverTimestamp,
+  getDoc,
+  deleteDoc,
+  collection
+} from 'firebase/firestore';
 
 const DEFAULT_INPUTS: ScenarioInputs = {
   name: 'Cenário Base', students: 60, numberOfClasses: 2, monthlyTicket: 1000,
@@ -128,18 +150,30 @@ const TabButton = ({ id, label, icon: Icon, active, onClick }: { id: any; label:
 );
 
 export default function App() {
-  const [view, setView] = useState<'dashboard' | 'comparison'>('dashboard');
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const [view, setView] = useState<'dashboard' | 'comparison' | 'admin'>('dashboard');
   const [activeTab, setActiveTab] = useState<'summary' | 'dre' | 'drivers' | 'cashflow' | 'sensitivity' | 'costs' | 'levers' | 'payroll'>('summary');
   const [presentationMode, setPresentationMode] = useState(false);
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [activeScenarioId, setActiveScenarioId] = useState('base');
   const dashboardRef = useRef<HTMLDivElement>(null);
+
+  const [invites, setInvites] = useState<string[]>([]);
+  const [newInviteEmail, setNewInviteEmail] = useState('');
+  const [newInvitePassword, setNewInvitePassword] = useState('');
+  const [isAdminLoading, setIsAdminLoading] = useState(false);
+  const [adminMessage, setAdminMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   const [scenarios, setScenarios] = useState<Record<string, ScenarioInputs>>(() => {
     const savedV4 = localStorage.getItem('fincalc_scenarios_v4');
     if (savedV4) try { return JSON.parse(savedV4); } catch (e) { console.error(e); }
     
-    // Migração da v3 para v4 se existir
     const savedV3 = localStorage.getItem('fincalc_scenarios_v3');
     if (savedV3) try { return JSON.parse(savedV3); } catch (e) { console.error(e); }
 
@@ -154,6 +188,178 @@ export default function App() {
     const saved = localStorage.getItem('fincalc_custom_ids_v4');
     return saved ? JSON.parse(saved) : [];
   });
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore Sync Listener
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = onSnapshot(doc(db, 'shared', 'main'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.scenarios) {
+          setScenarios(data.scenarios);
+          // Extrair IDs customizados (aqueles que não são base, conservative, aggressive)
+          const ids = Object.keys(data.scenarios).filter(id => !['base', 'conservative', 'aggressive'].includes(id));
+          setCustomScenarioIds(ids);
+          setLastSynced(data.updatedAt?.toDate() || new Date());
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Admin Invites Listener
+  useEffect(() => {
+    if (!user || user.email !== 'elaine.benfica@gmail.com') return;
+
+    const unsubscribe = onSnapshot(collection(db, 'invites'), (snapshot) => {
+      const emails = snapshot.docs.map(doc => doc.id);
+      setInvites(emails);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const saveToCloud = async () => {
+    if (!user) return;
+    setIsSyncing(true);
+    try {
+      await setDoc(doc(db, 'shared', 'main'), {
+        scenarios,
+        updatedAt: serverTimestamp(),
+        updatedBy: user.uid,
+        updatedByEmail: user.email
+      });
+      setLastSynced(new Date());
+    } catch (error) {
+      console.error('Erro ao salvar na nuvem:', error);
+      alert('Erro ao salvar dados. Verifique sua conexão ou permissões.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const login = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    try {
+      // 1. Verificar se o email está na lista de convidados (whitelist)
+      const inviteDoc = await getDoc(doc(db, 'invites', email.toLowerCase()));
+      if (!inviteDoc.exists() && email.toLowerCase() !== 'elaine.benfica@gmail.com') {
+        setAuthError('Este e-mail não possui convite para acessar o sistema.');
+        return;
+      }
+
+      // 2. Tentar fazer login
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (error: any) {
+      console.error('Erro de login:', error);
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setAuthError('E-mail ou senha incorretos.');
+      } else {
+        setAuthError('Ocorreu um erro ao tentar acessar. Tente novamente.');
+      }
+    }
+  };
+
+  const loginWithGoogle = async () => {
+    setAuthError(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      
+      // Apenas a Elaine pode entrar via Google se não tiver senha ainda
+      if (result.user.email !== 'elaine.benfica@gmail.com') {
+        await signOut(auth);
+        setAuthError('Acesso via Google permitido apenas para o administrador.');
+      }
+    } catch (error: any) {
+      console.error('Erro Google Login:', error);
+      setAuthError('Erro ao acessar com Google.');
+    }
+  };
+
+  const addInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInviteEmail || !newInvitePassword) return;
+    if (newInvitePassword.length < 6) {
+      setAdminMessage({ type: 'error', text: 'A senha deve ter pelo menos 6 caracteres.' });
+      return;
+    }
+
+    setIsAdminLoading(true);
+    setAdminMessage(null);
+    
+    let secondaryApp;
+    try {
+      // Usar um nome único para a instância secundária para evitar conflitos de rede/estado
+      const appName = `AuthWorker_${Date.now()}`;
+      secondaryApp = initializeApp(firebaseConfig, appName);
+      const secondaryAuth = getAuth(secondaryApp);
+      
+      try {
+        await createUserWithEmailAndPassword(secondaryAuth, newInviteEmail.toLowerCase().trim(), newInvitePassword);
+        await signOut(secondaryAuth);
+      } catch (authError: any) {
+        // Se o e-mail já estiver em uso, apenas seguimos para garantir que esteja no Firestore
+        if (authError.code !== 'auth/email-already-in-use') {
+          throw authError;
+        }
+      }
+
+      // 2. Adicionar à lista de convidados (Whitelist) no Firestore
+      await setDoc(doc(db, 'invites', newInviteEmail.toLowerCase().trim()), {
+        invitedAt: serverTimestamp(),
+        invitedBy: user?.email
+      });
+
+      setAdminMessage({ type: 'success', text: `Usuário ${newInviteEmail} autorizado com sucesso!` });
+      setNewInviteEmail('');
+      setNewInvitePassword('');
+    } catch (error: any) {
+      console.error('Erro ao adicionar convite:', error);
+      let msg = 'Erro ao criar usuário: ' + (error.message || 'Erro desconhecido');
+      
+      if (error.code === 'auth/network-request-failed') {
+        msg = 'Erro de rede: Verifique se você tem algum Ad-Blocker (bloqueador de anúncios) ativado. Eles costumam bloquear o serviço de criação de usuários do Firebase. Tente desativá-lo para esta página.';
+      }
+      
+      setAdminMessage({ type: 'error', text: msg });
+    } finally {
+      if (secondaryApp) {
+        try {
+          await deleteApp(secondaryApp);
+        } catch (e) {
+          console.error('Erro ao limpar app secundário:', e);
+        }
+      }
+      setIsAdminLoading(false);
+    }
+  };
+
+  const removeInvite = async (emailToRemove: string) => {
+    if (!window.confirm(`Remover acesso de ${emailToRemove}?`)) return;
+    setIsAdminLoading(true);
+    try {
+      await deleteDoc(doc(db, 'invites', emailToRemove));
+    } catch (error) {
+      console.error('Erro ao remover convite:', error);
+    } finally {
+      setIsAdminLoading(false);
+    }
+  };
+
+  const logout = () => signOut(auth);
 
   const activeInputs = scenarios[activeScenarioId] || scenarios['base'];
   const results = useMemo(() => calculateFinancials(activeInputs), [activeInputs]);
@@ -213,7 +419,7 @@ export default function App() {
     const workbook = XLSX.utils.book_new();
     
     // 1. DRE DETALHADA
-    const dreRows = [
+    const dreRows: any[][] = [
       ['RELATÓRIO FINANCEIRO EXECUTIVO'],
       ['Estudo:', activeInputs.name],
       ['Data de Exportação:', new Date().toLocaleDateString('pt-BR')],
@@ -256,7 +462,7 @@ export default function App() {
     XLSX.utils.book_append_sheet(workbook, dreSheet, "DRE Detalhada");
 
     // 2. COMPARATIVO DE CENÁRIOS
-    const compRows = [
+    const compRows: any[][] = [
       ['COMPARATIVO DE CENÁRIOS E ESTUDOS'],
       [''],
       ['Cenário', 'Alunos', 'Mensalidade', 'Rec. Líquida', 'Res. Operacional', 'TIR (%)', 'Payback']
@@ -302,6 +508,95 @@ export default function App() {
   const sensitivityTicket = useMemo(() => generateSensitivityData(activeInputs, 'monthlyTicket', [500, 750, 1000, 1250, 1500]), [activeInputs]);
   const sensitivityStudents = useMemo(() => generateSensitivityData(activeInputs, 'students', [20, 40, 60, 80, 100]), [activeInputs]);
 
+  if (!isAuthReady) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-slate-50">
+        <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-50 p-6">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }} 
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-10 rounded-3xl shadow-2xl border border-slate-100 max-w-md w-full"
+        >
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 mx-auto mb-6">
+              <TrendingUp className="text-white w-10 h-10" />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 mb-2">Acesso Restrito</h1>
+            <p className="text-slate-500">Entre com seu e-mail e senha de convidado.</p>
+          </div>
+          
+          <form onSubmit={login} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-600 ml-1">E-mail</label>
+              <input 
+                type="email" 
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                placeholder="seu@email.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-600 ml-1">Senha</label>
+              <input 
+                type="password" 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                placeholder="••••••••"
+              />
+            </div>
+
+            {authError && (
+              <motion.div 
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className="p-3 bg-red-50 text-red-600 text-xs font-medium rounded-lg border border-red-100"
+              >
+                {authError}
+              </motion.div>
+            )}
+
+            <button 
+              type="submit"
+              className="w-full flex items-center justify-center gap-3 py-4 bg-slate-900 text-white rounded-2xl font-bold hover:bg-slate-800 transition-all shadow-lg mt-2"
+            >
+              <LogIn className="w-5 h-5" />
+              Acessar Sistema
+            </button>
+
+            <div className="relative my-8">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
+              <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-4 text-slate-400 font-bold tracking-widest">Área do Administrador</span></div>
+            </div>
+
+            <button 
+              type="button"
+              onClick={loginWithGoogle}
+              className="w-full flex items-center justify-center gap-3 py-4 bg-white border-2 border-blue-100 text-blue-600 rounded-2xl font-bold hover:bg-blue-50 hover:border-blue-200 transition-all shadow-sm"
+            >
+              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="" />
+              Entrar com Google (Admin)
+            </button>
+          </form>
+          
+          <p className="mt-8 text-[10px] text-slate-400 uppercase tracking-widest font-bold text-center">
+            Sistema de Gestão Estratégica
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
       <AnimatePresence>
@@ -316,6 +611,18 @@ export default function App() {
                 <button onClick={() => setView('dashboard')} className={cn("flex-1 flex items-center justify-center gap-2 py-2 rounded-lg transition-all text-xs font-bold", view === 'dashboard' ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}><LayoutDashboard className="w-3.5 h-3.5" />DASHBOARD</button>
                 <button onClick={() => setView('comparison')} className={cn("flex-1 flex items-center justify-center gap-2 py-2 rounded-lg transition-all text-xs font-bold", view === 'comparison' ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}><TableIcon className="w-3.5 h-3.5" />COMPARAÇÃO</button>
               </div>
+
+              {user?.email === 'elaine.benfica@gmail.com' && (
+                <button 
+                  onClick={() => setView('admin')} 
+                  className={cn("w-full flex items-center justify-center gap-2 py-3 rounded-xl mb-4 transition-all text-xs font-bold border-2", 
+                    view === 'admin' ? "bg-slate-900 border-slate-900 text-white shadow-lg" : "bg-white border-slate-100 text-slate-600 hover:border-slate-200")
+                  }
+                >
+                  <Users className="w-4 h-4" />
+                  GERENCIAR ACESSOS
+                </button>
+              )}
               <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl mb-4">
                 {SCENARIOS_CONFIG.map((config) => (
                   <button key={config.id} onClick={() => setActiveScenarioId(config.id)} className={cn("flex flex-col items-center py-2 rounded-lg transition-all", activeScenarioId === config.id ? "bg-white shadow-sm text-blue-600" : "text-slate-400 hover:text-slate-600")}>
@@ -327,8 +634,19 @@ export default function App() {
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-2 px-1">
                   <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estudos Salvos</h3>
-                  <button onClick={saveStudy} className="text-[10px] font-bold text-blue-600 hover:text-blue-700">+ NOVO</button>
+                  <div className="flex gap-2">
+                    <button onClick={saveToCloud} disabled={isSyncing} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1">
+                      {isSyncing ? <RefreshCw className="w-2 h-2 animate-spin" /> : <Cloud className="w-2 h-2" />}
+                      SALVAR NUVEM
+                    </button>
+                    <button onClick={saveStudy} className="text-[10px] font-bold text-blue-600 hover:text-blue-700">+ NOVO</button>
+                  </div>
                 </div>
+                {lastSynced && (
+                  <p className="text-[9px] text-slate-400 px-1 mb-2 italic">
+                    Sincronizado em: {lastSynced.toLocaleTimeString()}
+                  </p>
+                )}
                 <div className="space-y-1 max-h-40 overflow-y-auto scrollbar-none">
                   {customScenarioIds.length === 0 && <p className="text-[10px] text-slate-400 italic px-1">Nenhum estudo salvo.</p>}
                   {customScenarioIds.map(id => (
@@ -377,30 +695,151 @@ export default function App() {
                 <InputField label="Horizonte" suffix="meses" value={activeInputs.projectionMonths} onChange={(v) => handleInputChange('projectionMonths', v)} />
               </InputGroup>
             </div>
+            <div className="mt-auto pt-6 border-t border-slate-100 p-6">
+              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl">
+                <div className="flex items-center gap-3 overflow-hidden">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt="" className="w-8 h-8 rounded-full border border-white shadow-sm" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold text-xs">
+                      {user.displayName?.charAt(0) || user.email?.charAt(0)}
+                    </div>
+                  )}
+                  <div className="overflow-hidden">
+                    <p className="text-xs font-bold text-slate-900 truncate">{user.displayName || 'Usuário'}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
+                  </div>
+                </div>
+                <button onClick={logout} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </motion.aside>
         )}
       </AnimatePresence>
 
-      <main id="dashboard-content" className="flex-1 overflow-y-auto p-8 scrollbar-thin" ref={dashboardRef}>
+      <main className="flex-1 overflow-y-auto p-8 scrollbar-thin" ref={dashboardRef}>
         <header className="flex justify-between items-end mb-8">
           <div>
-            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">{view === 'dashboard' ? 'Dashboard Executivo' : 'Comparativo'}</h2>
-            <p className="text-slate-500 font-medium">{activeInputs.name}</p>
+            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">
+              {view === 'dashboard' ? 'Dashboard Executivo' : view === 'comparison' ? 'Comparativo' : 'Gerenciamento de Acessos'}
+            </h2>
+            <p className="text-slate-500 font-medium">{view === 'admin' ? 'Controle de convites e permissões' : activeInputs.name}</p>
           </div>
-          <div className="flex gap-3">
-            <button onClick={() => setPresentationMode(!presentationMode)} className="px-4 py-2 bg-white border rounded-xl text-sm font-semibold">{presentationMode ? 'Sair' : 'Apresentação'}</button>
-            <button onClick={exportToExcel} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold">Excel</button>
-            <button 
-              onClick={exportToPDF} 
-              className="px-4 py-2 bg-slate-900 text-white hover:bg-slate-800 rounded-xl text-sm font-semibold transition-all"
-            >
-              PDF
-            </button>
-          </div>
+          {view !== 'admin' && (
+            <div className="flex gap-3">
+              <button onClick={() => setPresentationMode(!presentationMode)} className="px-4 py-2 bg-white border rounded-xl text-sm font-semibold">{presentationMode ? 'Sair' : 'Apresentação'}</button>
+              <button onClick={exportToExcel} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold">Excel</button>
+              <button 
+                onClick={exportToPDF} 
+                className="px-4 py-2 bg-slate-900 text-white hover:bg-slate-800 rounded-xl text-sm font-semibold transition-all"
+              >
+                PDF
+              </button>
+            </div>
+          )}
         </header>
 
-        {view === 'dashboard' ? (
-          <div className="space-y-8">
+        {view === 'admin' ? (
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-4xl space-y-8">
+            <div className="bg-white p-8 rounded-3xl border shadow-sm">
+              <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                <Users className="text-blue-600" />
+                Convidar e Criar Usuário
+              </h3>
+              <form onSubmit={addInvite} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-400 uppercase ml-1">E-mail do Convidado</label>
+                    <input 
+                      type="email" 
+                      placeholder="exemplo@email.com" 
+                      value={newInviteEmail}
+                      onChange={(e) => setNewInviteEmail(e.target.value)}
+                      required
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-400 uppercase ml-1">Senha de Acesso</label>
+                    <input 
+                      type="password" 
+                      placeholder="Mínimo 6 caracteres" 
+                      value={newInvitePassword}
+                      onChange={(e) => setNewInvitePassword(e.target.value)}
+                      required
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                    />
+                  </div>
+                </div>
+                
+                {adminMessage && (
+                  <div className={cn("p-3 rounded-lg text-xs font-medium border", 
+                    adminMessage.type === 'success' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-red-50 text-red-600 border-red-100")
+                  }>
+                    {adminMessage.text}
+                  </div>
+                )}
+
+                <button 
+                  type="submit" 
+                  disabled={isAdminLoading}
+                  className="w-full md:w-auto px-10 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isAdminLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
+                  {isAdminLoading ? 'Processando...' : 'Autorizar e Criar Acesso'}
+                </button>
+              </form>
+              <p className="mt-6 p-4 bg-blue-50 rounded-2xl text-[11px] text-blue-700 leading-relaxed">
+                <strong>💡 Como funciona:</strong> Ao clicar no botão, o sistema cria a conta de acesso e autoriza o e-mail simultaneamente. 
+                O convidado poderá logar imediatamente usando o e-mail e a senha que você definiu acima.
+              </p>
+            </div>
+
+            <div className="bg-white rounded-3xl border shadow-sm overflow-hidden">
+              <div className="p-8 border-b">
+                <h3 className="text-xl font-bold">E-mails Autorizados</h3>
+              </div>
+              <table className="w-full">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-8 py-4 text-left text-xs font-bold text-slate-400 uppercase tracking-widest">E-mail</th>
+                    <th className="px-8 py-4 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {invites.map(email => (
+                    <tr key={email} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-8 py-4 text-sm font-medium text-slate-700">{email}</td>
+                      <td className="px-8 py-4 text-center">
+                        {email !== 'elaine.benfica@gmail.com' ? (
+                          <button 
+                            onClick={() => removeInvite(email)}
+                            className="p-2 text-slate-300 hover:text-red-500 transition-colors"
+                            title="Remover Acesso"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">ADMIN</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {invites.length === 0 && (
+                    <tr>
+                      <td colSpan={2} className="px-8 py-12 text-center text-slate-400 italic text-sm">
+                        Nenhum convidado cadastrado.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </motion.div>
+        ) : view === 'dashboard' ? (
+          <div id="dashboard-content" className="space-y-8">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <StatCard title="Result. Operacional" value={formatCurrency(results.operatingResult)} subValue={`Margem: ${formatPercent(results.operatingMargin)}`} icon={TrendingUp} color="bg-emerald-500" tooltip="Lucro líquido da operação antes de impostos financeiros e investimentos." />
               <StatCard title="TIR (IRR)" value={results.irr ? `${results.irr.toFixed(2)}%` : 'N/A'} subValue="Rentabilidade" icon={PieChart} color="bg-blue-500" tooltip="Taxa Interna de Retorno: a rentabilidade anualizada do projeto." />

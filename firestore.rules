@@ -1,0 +1,56 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: shared
+// Document ID: main
+// Fields:
+//   - scenarios: map (required) - Map of scenario IDs to ScenarioInputs
+//   - updatedAt: timestamp (required) - Last update time
+//   - updatedBy: string (required) - UID of the user who updated
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+             (request.auth.token.email == "elaine.benfica@gmail.com");
+    }
+
+    function isInvited() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/invites/$(request.auth.token.email.lower()));
+    }
+
+    function isValidScenariosData(data) {
+      return data.scenarios is map &&
+             data.updatedAt is timestamp &&
+             data.updatedBy is string;
+    }
+
+    match /invites/{email} {
+      // Apenas a Elaine (admin) pode gerenciar convites
+      allow read, write: if isAdmin();
+    }
+
+    match /shared/main {
+      // Permite leitura apenas para convidados
+      allow read: if isInvited();
+      
+      // Permite escrita apenas para convidados
+      allow write: if isInvited() && isValidScenariosData(request.resource.data);
+    }
+
+    // Bloqueia tudo por padrão
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "ScenarioInputs": {
+      "title": "ScenarioInputs",
+      "description": "Inputs for a single financial scenario",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "students": { "type": "number" },
+        "monthlyTicket": { "type": "number" },
+        "numberOfClasses": { "type": "number" },
+        "discountPercent": { "type": "number" },
+        "taxPercent": { "type": "number" },
+        "commissionsPercent": { "type": "number" },
+        "otherVariableCostsPercent": { "type": "number" },
+        "fixedCosts": { "type": "number" },
+        "investment": { "type": "number" },
+        "growthRate": { "type": "number" }
+      },
+      "required": ["name", "students", "monthlyTicket"]
+    },
+    "ScenariosData": {
+      "title": "ScenariosData",
+      "description": "A collection of scenarios and metadata",
+      "type": "object",
+      "properties": {
+        "scenarios": {
+          "type": "object",
+          "additionalProperties": { "$ref": "ScenarioInputs" }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/shared/main": {
+      "schema": "ScenariosData",
+      "description": "The main shared study data"
+    }
+  }
+}
