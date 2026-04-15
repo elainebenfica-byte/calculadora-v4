@@ -210,6 +210,11 @@ export default function App() {
           // Extrair IDs customizados (aqueles que não são base, conservative, aggressive)
           const ids = Object.keys(data.scenarios).filter(id => !['base', 'conservative', 'aggressive'].includes(id));
           setCustomScenarioIds(ids);
+          
+          // Sincronizar com o localStorage para manter consistência
+          localStorage.setItem('fincalc_scenarios_v4', JSON.stringify(data.scenarios));
+          localStorage.setItem('fincalc_custom_ids_v4', JSON.stringify(ids));
+          
           setLastSynced(data.updatedAt?.toDate() || new Date());
         }
       }
