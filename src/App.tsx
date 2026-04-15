@@ -213,6 +213,12 @@ export default function App() {
           setLastSynced(data.updatedAt?.toDate() || new Date());
         }
       }
+    }, (error) => {
+      console.error('Erro ao ler dados compartilhados:', error);
+      if (error.message.includes('insufficient permissions')) {
+        setAuthError('Sua conta não tem permissão para acessar os dados. Verifique se seu e-mail foi autorizado.');
+        signOut(auth);
+      }
     });
 
     return () => unsubscribe();
@@ -225,6 +231,8 @@ export default function App() {
     const unsubscribe = onSnapshot(collection(db, 'invites'), (snapshot) => {
       const emails = snapshot.docs.map(doc => doc.id);
       setInvites(emails);
+    }, (error) => {
+      console.error('Erro ao ler convites:', error);
     });
 
     return () => unsubscribe();
@@ -252,20 +260,29 @@ export default function App() {
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    const cleanEmail = email.toLowerCase().trim();
+    
     try {
-      // 1. Verificar se o email está na lista de convidados (whitelist)
-      const inviteDoc = await getDoc(doc(db, 'invites', email.toLowerCase()));
-      if (!inviteDoc.exists() && email.toLowerCase() !== 'elaine.benfica@gmail.com') {
-        setAuthError('Este e-mail não possui convite para acessar o sistema.');
-        return;
+      // 1. Tentar fazer login primeiro para ter as permissões necessárias para ler o convite
+      await signInWithEmailAndPassword(auth, cleanEmail, password);
+      
+      // 2. Verificar se o email está na lista de convidados (whitelist)
+      // A Elaine sempre tem acesso
+      if (cleanEmail !== 'elaine.benfica@gmail.com') {
+        const inviteDoc = await getDoc(doc(db, 'invites', cleanEmail));
+        if (!inviteDoc.exists()) {
+          await signOut(auth);
+          setAuthError('Este e-mail não possui convite para acessar o sistema.');
+        }
       }
-
-      // 2. Tentar fazer login
-      await signInWithEmailAndPassword(auth, email, password);
     } catch (error: any) {
       console.error('Erro de login:', error);
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
         setAuthError('E-mail ou senha incorretos.');
+      } else if (error.code === 'permission-denied') {
+        // Se o login funcionou mas o getDoc falhou por permissão, provavelmente não está convidado
+        await signOut(auth);
+        setAuthError('Acesso negado. Verifique se seu e-mail foi autorizado.');
       } else {
         setAuthError('Ocorreu um erro ao tentar acessar. Tente novamente.');
       }

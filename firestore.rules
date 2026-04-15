@@ -22,11 +22,14 @@ service cloud.firestore {
     
     function isAdmin() {
       return isAuthenticated() && 
-             (request.auth.token.email == "elaine.benfica@gmail.com");
+             (request.auth.token.email.lower() == "elaine.benfica@gmail.com");
     }
 
     function isInvited() {
-      return isAuthenticated() && exists(/databases/$(database)/documents/invites/$(request.auth.token.email.lower()));
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/invites/$(request.auth.token.email.lower())) ||
+        isAdmin()
+      );
     }
 
     function isValidScenariosData(data) {
@@ -36,8 +39,10 @@ service cloud.firestore {
     }
 
     match /invites/{email} {
-      // Apenas a Elaine (admin) pode gerenciar convites
-      allow read, write: if isAdmin();
+      // Apenas a Elaine (admin) pode gerenciar convites. 
+      // Usuários autenticados podem ler seu próprio convite para validar o acesso.
+      allow read: if isAuthenticated() && (request.auth.token.email.lower() == email.lower() || isAdmin());
+      allow write: if isAdmin();
     }
 
     match /shared/main {
